@@ -8,15 +8,16 @@ import 'package:http/http.dart' as http;
 import 'package:test/scaffolding.dart';
 import 'package:zulip/api/backoff.dart';
 import 'package:zulip/api/core.dart';
+import 'package:zulip/api/exception.dart';
 import 'package:zulip/api/model/events.dart';
+import 'package:zulip/api/model/initial_snapshot.dart';
 import 'package:zulip/api/model/model.dart';
 import 'package:zulip/api/route/events.dart';
 import 'package:zulip/api/route/messages.dart';
 import 'package:zulip/api/route/realm.dart';
 import 'package:zulip/log.dart';
 import 'package:zulip/model/actions.dart';
-import 'package:zulip/model/database.dart';
-import 'package:zulip/model/settings.dart';
+import 'package:zulip/model/presence.dart';
 import 'package:zulip/model/store.dart';
 import 'package:zulip/notifications/receive.dart';
 
@@ -31,31 +32,7 @@ import 'test_store.dart';
 
 void main() {
   TestZulipBinding.ensureInitialized();
-
-  group('GlobalStore.updateGlobalSettings', () {
-    test('smoke', () async {
-      final globalStore = eg.globalStore();
-      check(globalStore).globalSettings.themeSetting.equals(null);
-
-      final result = await globalStore.updateGlobalSettings(
-        GlobalSettingsCompanion(themeSetting: Value(ThemeSetting.dark)));
-      check(globalStore).globalSettings.themeSetting.equals(ThemeSetting.dark);
-      check(result).equals(globalStore.globalSettings);
-    });
-
-    test('should notify listeners', () async {
-      int notifyCount = 0;
-      final globalStore = eg.globalStore();
-      globalStore.addListener(() => notifyCount++);
-      check(notifyCount).equals(0);
-
-      await globalStore.updateGlobalSettings(
-        GlobalSettingsCompanion(themeSetting: Value(ThemeSetting.light)));
-      check(notifyCount).equals(1);
-    });
-
-    // TODO integration tests with sqlite
-  });
+  Presence.debugEnable = false;
 
   final account1 = eg.selfAccount.copyWith(id: 1);
   final account2 = eg.otherAccount.copyWith(id: 2);
@@ -173,6 +150,42 @@ void main() {
     check(connection).isOpen.isTrue();
   }));
 
+  test('GlobalStore.perAccount loading succeeds; InitialSnapshot has ancient server version', () => awaitFakeAsync((async) async {
+    final globalStore = UpdateMachineTestGlobalStore(accounts: [eg.selfAccount]);
+    final json = eg.initialSnapshot(zulipFeatureLevel: eg.ancientZulipFeatureLevel).toJson();
+    globalStore.prepareRegisterQueueResponse = (connection) {
+      connection.prepare(json: json);
+    };
+    final connection = globalStore.apiConnectionFromAccount(eg.selfAccount) as FakeApiConnection;
+    final future = globalStore.perAccount(eg.selfAccount.id);
+    check(connection.takeRequests()).length.equals(1); // register request
+
+    await check(future).throws<AccountNotFoundException>();
+    check(globalStore.takeDoRemoveAccountCalls()).single.equals(eg.selfAccount.id);
+    // no poll, server-emoji-data, or register-token requests
+    check(connection.takeRequests()).isEmpty();
+    check(connection).isOpen.isFalse();
+  }));
+
+  test('GlobalStore.perAccount loading fails; malformed response with ancient server version', () => awaitFakeAsync((async) async {
+    final globalStore = UpdateMachineTestGlobalStore(accounts: [eg.selfAccount]);
+    final json = eg.initialSnapshot(zulipFeatureLevel: eg.ancientZulipFeatureLevel).toJson();
+    json['realm_emoji'] = 123;
+    check(() => InitialSnapshot.fromJson(json)).throws<void>();
+    globalStore.prepareRegisterQueueResponse = (connection) {
+      connection.prepare(json: json);
+    };
+    final connection = globalStore.apiConnectionFromAccount(eg.selfAccount) as FakeApiConnection;
+    final future = globalStore.perAccount(eg.selfAccount.id);
+    check(connection.takeRequests()).length.equals(1); // register request
+
+    await check(future).throws<AccountNotFoundException>();
+    check(globalStore.takeDoRemoveAccountCalls()).single.equals(eg.selfAccount.id);
+    // no poll, server-emoji-data, or register-token requests
+    check(connection.takeRequests()).isEmpty();
+    check(connection).isOpen.isFalse();
+  }));
+
   test('GlobalStore.perAccount account is logged out while loading; then succeeds', () => awaitFakeAsync((async) async {
     final globalStore = UpdateMachineTestGlobalStore(accounts: [eg.selfAccount]);
     globalStore.prepareRegisterQueueResponse = (connection) =>
@@ -215,6 +228,52 @@ void main() {
     check(connection).isOpen.isFalse();
   }));
 
+  test('GlobalStore.perAccount account is logged out while loading; then succeeds; InitialSnapshot has ancient server version', () => awaitFakeAsync((async) async {
+    final globalStore = UpdateMachineTestGlobalStore(accounts: [eg.selfAccount]);
+    final json = eg.initialSnapshot(zulipFeatureLevel: eg.ancientZulipFeatureLevel).toJson();
+    globalStore.prepareRegisterQueueResponse = (connection) {
+      connection.prepare(
+        delay: TestGlobalStore.removeAccountDuration + Duration(seconds: 1),
+        json: json);
+    };
+    final connection = globalStore.apiConnectionFromAccount(eg.selfAccount) as FakeApiConnection;
+    final future = globalStore.perAccount(eg.selfAccount.id);
+    check(connection.takeRequests()).length.equals(1); // register request
+
+    await logOutAccount(globalStore, eg.selfAccount.id);
+    check(globalStore.takeDoRemoveAccountCalls()).single.equals(eg.selfAccount.id);
+
+    await check(future).throws<AccountNotFoundException>();
+    check(globalStore.takeDoRemoveAccountCalls()).isEmpty();
+    // no poll, server-emoji-data, or register-token requests
+    check(connection.takeRequests()).isEmpty();
+    check(connection).isOpen.isFalse();
+  }));
+
+  test('GlobalStore.perAccount account is logged out while loading; then fails; malformed response with ancient server version', () => awaitFakeAsync((async) async {
+    final globalStore = UpdateMachineTestGlobalStore(accounts: [eg.selfAccount]);
+    final json = eg.initialSnapshot(zulipFeatureLevel: eg.ancientZulipFeatureLevel).toJson();
+    json['realm_emoji'] = 123;
+    check(() => InitialSnapshot.fromJson(json)).throws<void>();
+    globalStore.prepareRegisterQueueResponse = (connection) {
+      connection.prepare(
+        delay: TestGlobalStore.removeAccountDuration + Duration(seconds: 1),
+        json: json);
+    };
+    final connection = globalStore.apiConnectionFromAccount(eg.selfAccount) as FakeApiConnection;
+    final future = globalStore.perAccount(eg.selfAccount.id);
+    check(connection.takeRequests()).length.equals(1); // register request
+
+    await logOutAccount(globalStore, eg.selfAccount.id);
+    check(globalStore.takeDoRemoveAccountCalls()).single.equals(eg.selfAccount.id);
+
+    await check(future).throws<AccountNotFoundException>();
+    check(globalStore.takeDoRemoveAccountCalls()).isEmpty();
+    // no poll, server-emoji-data, or register-token requests
+    check(connection.takeRequests()).isEmpty();
+    check(connection).isOpen.isFalse();
+  }));
+
   test('GlobalStore.perAccount account is logged out during transient-error backoff', () => awaitFakeAsync((async) async {
     final globalStore = UpdateMachineTestGlobalStore(accounts: [eg.selfAccount]);
     globalStore.prepareRegisterQueueResponse = (connection) =>
@@ -238,6 +297,16 @@ void main() {
     check(connection.takeRequests()).isEmpty();
     check(connection).isOpen.isFalse();
   }));
+
+  test('GlobalStore.perAccount throws if missing queueId', () async {
+    final globalStore = UpdateMachineTestGlobalStore(accounts: [eg.selfAccount]);
+    globalStore.prepareRegisterQueueResponse = (connection) {
+      connection.prepare(json:
+        deepToJson(eg.initialSnapshot()) as Map<String, dynamic>
+          ..['queue_id'] = null);
+    };
+    await check(globalStore.perAccount(eg.selfAccount.id)).throws();
+  });
 
   // TODO test insertAccount
 
@@ -284,6 +353,31 @@ void main() {
     });
 
     // TODO test database gets updated correctly (an integration test with sqlite?)
+  });
+  
+  test('GlobalStore.updateZulipVersionData', () async {
+    final [currentZulipVersion,          newZulipVersion             ]
+        = ['10.0-beta2-302-gf5b08b11f4', '10.0-beta2-351-g75ac8fe961'];
+    final [currentZulipMergeBase,        newZulipMergeBase           ]
+        = ['10.0-beta2-291-g33ffd8c040', '10.0-beta2-349-g463dc632b3'];
+    final [currentZulipFeatureLevel,     newZulipFeatureLevel        ]
+        = [368,                          370                         ];
+
+    final selfAccount = eg.selfAccount.copyWith(
+      zulipVersion: currentZulipVersion,
+      zulipMergeBase: Value(currentZulipMergeBase),
+      zulipFeatureLevel: currentZulipFeatureLevel);
+    final globalStore = eg.globalStore(accounts: [selfAccount]);
+    final updated = await globalStore.updateZulipVersionData(selfAccount.id,
+      ZulipVersionData(
+        zulipVersion: newZulipVersion,
+        zulipMergeBase: newZulipMergeBase,
+        zulipFeatureLevel: newZulipFeatureLevel));
+    check(globalStore.getAccount(selfAccount.id)).identicalTo(updated);
+    check(updated).equals(selfAccount.copyWith(
+      zulipVersion: newZulipVersion,
+      zulipMergeBase: Value(newZulipMergeBase),
+      zulipFeatureLevel: newZulipFeatureLevel));
   });
 
   group('GlobalStore.removeAccount', () {
@@ -477,7 +571,8 @@ void main() {
 
   group('PerAccountStore.sendMessage', () {
     test('smoke', () async {
-      final store = eg.store();
+      final store = eg.store(initialSnapshot: eg.initialSnapshot(
+        queueId: 'fb67bf8a-c031-47cc-84cf-ed80accacda8'));
       final connection = store.connection as FakeApiConnection;
       final stream = eg.stream();
       connection.prepare(json: SendMessageResult(id: 12345).toJson());
@@ -493,6 +588,8 @@ void main() {
           'topic': 'world',
           'content': 'hello',
           'read_by_sender': 'true',
+          'queue_id': 'fb67bf8a-c031-47cc-84cf-ed80accacda8',
+          'local_id': store.outboxMessages.keys.single.toString(),
         });
     });
   });
@@ -613,7 +710,7 @@ void main() {
 
     final emojiDataUrl = Uri.parse('https://cdn.example/emoji.json');
     final data = {
-      '1f642': ['smile'],
+      '1f642': ['slight_smile'],
       '1f34a': ['orange', 'tangerine', 'mandarin'],
     };
 
@@ -690,7 +787,7 @@ void main() {
         ..method.equals('GET')
         ..url.path.equals('/api/v1/events')
         ..url.queryParameters.deepEquals({
-          'queue_id': updateMachine.queueId,
+          'queue_id': store.queueId,
           'last_event_id': lastEventId.toString(),
         });
     }
@@ -855,7 +952,7 @@ void main() {
 
     void prepareExpiredEventQueue() {
       connection.prepare(apiException: eg.apiExceptionBadEventQueueId(
-        queueId: updateMachine.queueId));
+        queueId: store.queueId));
     }
 
     Future<void> prepareHandleEventError() async {
@@ -1127,6 +1224,46 @@ void main() {
       // Reload never succeeds and there are no unhandled errors.
       check(globalStore.perAccountSync(eg.selfAccount.id)).isNull();
     }));
+
+    test('new store is not loaded, gets InitialSnapshot with ancient server version', () => awaitFakeAsync((async) async {
+      final json = eg.initialSnapshot(zulipFeatureLevel: eg.ancientZulipFeatureLevel).toJson();
+      await prepareReload(async, prepareRegisterQueueResponse: (connection) {
+        connection.prepare(
+          delay: Duration(seconds: 1),
+          json: json);
+      });
+
+      async.elapse(const Duration(seconds: 1));
+      check(globalStore.takeDoRemoveAccountCalls()).single.equals(eg.selfAccount.id);
+
+      async.elapse(TestGlobalStore.removeAccountDuration);
+      check(globalStore.perAccountSync(eg.selfAccount.id)).isNull();
+
+      async.flushTimers();
+      // Reload never succeeds and there are no unhandled errors.
+      check(globalStore.perAccountSync(eg.selfAccount.id)).isNull();
+    }));
+
+    test('new store is not loaded, gets malformed response with ancient server version', () => awaitFakeAsync((async) async {
+      final json = eg.initialSnapshot(zulipFeatureLevel: eg.ancientZulipFeatureLevel).toJson();
+      json['realm_emoji'] = 123;
+      check(() => InitialSnapshot.fromJson(json)).throws<void>();
+      await prepareReload(async, prepareRegisterQueueResponse: (connection) {
+        connection.prepare(
+          delay: Duration(seconds: 1),
+          json: json);
+      });
+
+      async.elapse(const Duration(seconds: 1));
+      check(globalStore.takeDoRemoveAccountCalls()).single.equals(eg.selfAccount.id);
+
+      async.elapse(TestGlobalStore.removeAccountDuration);
+      check(globalStore.perAccountSync(eg.selfAccount.id)).isNull();
+
+      async.flushTimers();
+      // Reload never succeeds and there are no unhandled errors.
+      check(globalStore.perAccountSync(eg.selfAccount.id)).isNull();
+    }));
   });
 
   group('UpdateMachine.registerNotificationToken', () {
@@ -1158,6 +1295,7 @@ void main() {
       // (This is probably the common case.)
       addTearDown(testBinding.reset);
       testBinding.firebaseMessagingInitialToken = '012abc';
+      testBinding.packageInfoResult = eg.packageInfo(packageName: 'com.zulip.flutter');
       addTearDown(NotificationService.debugReset);
       await NotificationService.instance.start();
 
@@ -1185,6 +1323,7 @@ void main() {
       // request for the token is still pending.
       addTearDown(testBinding.reset);
       testBinding.firebaseMessagingInitialToken = '012abc';
+      testBinding.packageInfoResult = eg.packageInfo(packageName: 'com.zulip.flutter');
       addTearDown(NotificationService.debugReset);
       final startFuture = NotificationService.instance.start();
 
@@ -1204,6 +1343,7 @@ void main() {
       // When the token later appears, send it.
       connection.prepare(json: {});
       await startFuture;
+      async.flushMicrotasks();
       if (defaultTargetPlatform == TargetPlatform.android) {
         checkLastRequestFcm(token: '012abc');
       } else {
@@ -1218,6 +1358,51 @@ void main() {
         checkLastRequestFcm(token: '456def');
       }
     }));
+
+    test('on iOS, use provided app ID from packageInfo', () => awaitFakeAsync((async) async {
+      final origTargetPlatform = debugDefaultTargetPlatformOverride;
+      addTearDown(() => debugDefaultTargetPlatformOverride = origTargetPlatform);
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      addTearDown(testBinding.reset);
+      testBinding.firebaseMessagingInitialToken = '012abc';
+      testBinding.packageInfoResult = eg.packageInfo(packageName: 'com.example.test');
+      addTearDown(NotificationService.debugReset);
+      await NotificationService.instance.start();
+
+      prepareStore();
+      connection.prepare(json: {});
+      await updateMachine.registerNotificationToken();
+      checkLastRequestApns(token: '012abc', appid: 'com.example.test');
+    }));
+  });
+
+  group('ZulipVersionData', () {
+    group('fromMalformedServerResponseException', () {
+      test('replace missing feature level with 0', () async {
+        final connection = testBinding.globalStore.apiConnectionFromAccount(eg.selfAccount) as FakeApiConnection;
+
+        final json = eg.initialSnapshot().toJson()
+          ..['zulip_version'] = '2.0.0'
+          ..remove('zulip_feature_level') // malformed in current schema
+          ..remove('zulip_merge_base');
+
+        Object? error;
+        connection.prepare(json: json);
+        try {
+          await registerQueue(connection);
+        } catch (e) {
+          error = e;
+        }
+
+        check(error).isNotNull().isA<MalformedServerResponseException>();
+        final zulipVersionData = ZulipVersionData.fromMalformedServerResponseException(
+          error as MalformedServerResponseException);
+        check(zulipVersionData).isNotNull()
+          ..zulipVersion.equals('2.0.0')
+          ..zulipMergeBase.isNull()
+          ..zulipFeatureLevel.equals(0);
+      });
+    });
   });
 }
 

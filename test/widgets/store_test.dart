@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_checks/flutter_checks.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:zulip/model/actions.dart';
+import 'package:zulip/model/settings.dart';
 import 'package:zulip/model/store.dart';
 import 'package:zulip/widgets/app.dart';
 import 'package:zulip/widgets/inbox.dart';
@@ -57,7 +58,7 @@ extension MyWidgetWithMixinStateChecks on Subject<MyWidgetWithMixinState> {
 void main() {
   TestZulipBinding.ensureInitialized();
 
-  testWidgets('GlobalStoreWidget', (tester) async {
+  testWidgets('GlobalStoreWidget loads data while showing placeholder', (tester) async {
     addTearDown(testBinding.reset);
 
     GlobalStore? globalStore;
@@ -69,18 +70,107 @@ void main() {
             return const SizedBox.shrink();
           })));
     // First, shows a loading page instead of child.
-    check(tester.any(find.byType(CircularProgressIndicator))).isTrue();
+    check(find.byType(CircularProgressIndicator)).findsOne();
     check(globalStore).isNull();
 
     await tester.pump();
     // Then after loading, mounts child instead, with provided store.
-    check(tester.any(find.byType(CircularProgressIndicator))).isFalse();
+    check(find.byType(CircularProgressIndicator)).findsNothing();
     check(globalStore).identicalTo(testBinding.globalStore);
 
     await testBinding.globalStore.add(eg.selfAccount, eg.initialSnapshot());
     check(globalStore).isNotNull()
       .accountEntries.single
       .equals((accountId: eg.selfAccount.id, account: eg.selfAccount));
+  });
+
+  testWidgets('GlobalStoreWidget awaits blockingFuture', (tester) async {
+    addTearDown(testBinding.reset);
+
+    final completer = Completer<void>();
+    await tester.pumpWidget(Directionality(textDirection: TextDirection.ltr,
+      child: GlobalStoreWidget(
+        blockingFuture: completer.future,
+        child: Text('done'))));
+
+    await tester.pump();
+    await tester.pump();
+    await tester.pump();
+    // Even after the store must have loaded,
+    // still shows loading page while blockingFuture is pending.
+    check(find.byType(CircularProgressIndicator)).findsOne();
+    check(find.text('done')).findsNothing();
+
+    // Once blockingFuture completes…
+    completer.complete();
+    await tester.pump();
+    // … mounts child instead of the loading page.
+    check(find.byType(CircularProgressIndicator)).findsNothing();
+    check(find.text('done')).findsOne();
+  });
+
+  testWidgets('GlobalStoreWidget handles failed blockingFuture like success', (tester) async {
+    addTearDown(testBinding.reset);
+
+    final completer = Completer<void>();
+    await tester.pumpWidget(Directionality(textDirection: TextDirection.ltr,
+      child: GlobalStoreWidget(
+        blockingFuture: completer.future,
+        child: Text('done'))));
+
+    await tester.pump();
+    await tester.pump();
+    await tester.pump();
+    // Even after the store must have loaded,
+    // still shows loading page while blockingFuture is pending.
+    check(find.byType(CircularProgressIndicator)).findsOne();
+    check(find.text('done')).findsNothing();
+
+    // Once blockingFuture completes, even with an error…
+    completer.completeError(Exception('oops'));
+    await tester.pump();
+    // … mounts child instead of the loading page.
+    check(find.byType(CircularProgressIndicator)).findsNothing();
+    check(find.text('done')).findsOne();
+  });
+
+  testWidgets('GlobalStoreWidget.of updates dependents', (tester) async {
+    addTearDown(testBinding.reset);
+
+    List<int>? accountIds;
+    await tester.pumpWidget(
+      Directionality(textDirection: TextDirection.ltr,
+        child: GlobalStoreWidget(
+          child: Builder(builder: (context) {
+            accountIds = GlobalStoreWidget.of(context).accountIds.toList();
+            return SizedBox.shrink();
+          }))));
+    await tester.pump();
+    check(accountIds).isNotNull().isEmpty();
+
+    await testBinding.globalStore.add(eg.selfAccount, eg.initialSnapshot());
+    await tester.pump();
+    check(accountIds).isNotNull().deepEquals([eg.selfAccount.id]);
+  });
+
+  testWidgets('GlobalStoreWidget.settingsOf updates on settings update', (tester) async {
+    addTearDown(testBinding.reset);
+    await testBinding.globalStore.settings.setThemeSetting(ThemeSetting.dark);
+
+    ThemeSetting? themeSetting;
+    await tester.pumpWidget(
+      GlobalStoreWidget(
+        child: Builder(
+          builder: (context) {
+            themeSetting = GlobalStoreWidget.settingsOf(context).themeSetting;
+            return const SizedBox.shrink();
+          })));
+    await tester.pump();
+    check(themeSetting).equals(ThemeSetting.dark);
+
+    await testBinding.globalStore.settings.setThemeSetting(ThemeSetting.light);
+    await tester.pump();
+    check(themeSetting).equals(ThemeSetting.light);
   });
 
   testWidgets('PerAccountStoreWidget basic', (tester) async {

@@ -10,6 +10,7 @@ import '../log.dart';
 import 'algorithms.dart';
 import 'narrow.dart';
 import 'channel.dart';
+import 'store.dart';
 
 /// The view-model for unread messages.
 ///
@@ -34,10 +35,10 @@ import 'channel.dart';
 //   sync to those unreads, because the user has shown an interest in them.
 // TODO When loading a message list with stream messages, check all the stream
 //   messages and refresh [mentions] (see [mentions] dartdoc).
-class Unreads extends ChangeNotifier {
+class Unreads extends PerAccountStoreBase with ChangeNotifier {
   factory Unreads({
     required UnreadMessagesSnapshot initial,
-    required int selfUserId,
+    required CorePerAccountStore core,
     required ChannelStore channelStore,
   }) {
     final streams = <int, Map<TopicName, QueueList<int>>>{};
@@ -52,32 +53,33 @@ class Unreads extends ChangeNotifier {
 
     for (final unreadDmSnapshot in initial.dms) {
       final otherUserId = unreadDmSnapshot.otherUserId;
-      final narrow = DmNarrow.withUser(otherUserId, selfUserId: selfUserId);
+      final narrow = DmNarrow.withUser(otherUserId, selfUserId: core.selfUserId);
       dms[narrow] = QueueList.from(unreadDmSnapshot.unreadMessageIds);
     }
 
     for (final unreadHuddleSnapshot in initial.huddles) {
-      final narrow = DmNarrow.ofUnreadHuddleSnapshot(unreadHuddleSnapshot, selfUserId: selfUserId);
+      final narrow = DmNarrow.ofUnreadHuddleSnapshot(unreadHuddleSnapshot,
+          selfUserId: core.selfUserId);
       dms[narrow] = QueueList.from(unreadHuddleSnapshot.unreadMessageIds);
     }
 
     return Unreads._(
+      core: core,
       channelStore: channelStore,
       streams: streams,
       dms: dms,
       mentions: mentions,
       oldUnreadsMissing: initial.oldUnreadsMissing,
-      selfUserId: selfUserId,
     );
   }
 
   Unreads._({
+    required super.core,
     required this.channelStore,
     required this.streams,
     required this.dms,
     required this.mentions,
     required this.oldUnreadsMissing,
-    required this.selfUserId,
   });
 
   final ChannelStore channelStore;
@@ -124,8 +126,6 @@ class Unreads extends ChangeNotifier {
   /// Initialized to the value of [UnreadMessagesSnapshot.oldUnreadsMissing].
   /// Is set to false when the user clears out all unreads.
   bool oldUnreadsMissing;
-
-  final int selfUserId;
 
   // TODO(#370): maintain this count incrementally, rather than recomputing from scratch
   int countInCombinedFeedNarrow() {
@@ -197,6 +197,9 @@ class Unreads extends ChangeNotifier {
   // TODO: Implement unreads handling.
   int countInStarredMessagesNarrow() => 0;
 
+  // TODO: Implement unreads handling?
+  int countInKeywordSearchNarrow() => 0;
+
   int countInNarrow(Narrow narrow) {
     switch (narrow) {
       case CombinedFeedNarrow():
@@ -211,6 +214,8 @@ class Unreads extends ChangeNotifier {
         return countInMentionsNarrow();
       case StarredMessagesNarrow():
         return countInStarredMessagesNarrow();
+      case KeywordSearchNarrow():
+        return countInKeywordSearchNarrow();
     }
   }
 
@@ -441,22 +446,20 @@ class Unreads extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// To be called on success of a mark-all-as-read task in the modern protocol.
+  /// To be called on success of a mark-all-as-read task.
   ///
   /// When the user successfully marks all messages as read,
   /// there can't possibly be ancient unreads we don't know about.
   /// So this updates [oldUnreadsMissing] to false and calls [notifyListeners].
   ///
-  /// When we use POST /messages/flags/narrow (FL 155+) for mark-all-as-read,
-  /// we don't expect to get a mark-as-read event with `all: true`,
+  /// We don't expect to get a mark-as-read event with `all: true`,
   /// even on completion of the last batch of unreads.
-  /// If we did get an event with `all: true` (as we do in the legacy mark-all-
+  /// If we did get an event with `all: true` (as we did in a legacy mark-all-
   /// as-read protocol), this would be handled naturally, in
   /// [handleUpdateMessageFlagsEvent].
   ///
   /// Discussion:
   ///   <https://chat.zulip.org/#narrow/stream/243-mobile-team/topic/flutter.3A.20Mark-as-read/near/1680275>
-  // TODO(server-6) Delete mentions of legacy protocol.
   void handleAllMessagesReadSuccess() {
     oldUnreadsMissing = false;
 

@@ -10,6 +10,11 @@ import 'package:zulip/model/settings.dart';
 import 'package:zulip/model/store.dart';
 import 'package:zulip/model/unreads.dart';
 
+extension GlobalSettingsDataChecks on Subject<GlobalSettingsData> {
+  Subject<ThemeSetting?> get themeSetting => has((x) => x.themeSetting, 'themeSetting');
+  Subject<BrowserPreference?> get browserPreference => has((x) => x.browserPreference, 'browserPreference');
+}
+
 extension AccountChecks on Subject<Account> {
   Subject<int> get id => has((x) => x.id, 'id');
   Subject<Uri> get realmUrl => has((x) => x.realmUrl, 'realmUrl');
@@ -22,19 +27,20 @@ extension AccountChecks on Subject<Account> {
   Subject<String?> get ackedPushToken => has((x) => x.ackedPushToken, 'ackedPushToken');
 }
 
-extension GlobalStoreChecks on Subject<GlobalStore> {
-  Subject<GlobalSettingsData> get globalSettings => has((x) => x.globalSettings, 'globalSettings');
-  Subject<Iterable<Account>> get accounts => has((x) => x.accounts, 'accounts');
-  Subject<Iterable<int>> get accountIds => has((x) => x.accountIds, 'accountIds');
-  Subject<Iterable<({ int accountId, Account account })>> get accountEntries => has((x) => x.accountEntries, 'accountEntries');
-  Subject<Account?> getAccount(int id) => has((x) => x.getAccount(id), 'getAccount($id)');
-}
-
-extension GlobalSettingsDataChecks on Subject<GlobalSettingsData> {
+extension GlobalSettingsStoreChecks on Subject<GlobalSettingsStore> {
   Subject<ThemeSetting?> get themeSetting => has((x) => x.themeSetting, 'themeSetting');
   Subject<BrowserPreference?> get browserPreference => has((x) => x.browserPreference, 'browserPreference');
   Subject<BrowserPreference> get effectiveBrowserPreference => has((x) => x.effectiveBrowserPreference, 'effectiveBrowserPreference');
   Subject<UrlLaunchMode> getUrlLaunchMode(Uri url) => has((x) => x.getUrlLaunchMode(url), 'getUrlLaunchMode');
+  Subject<bool> getBool(BoolGlobalSetting setting) => has((x) => x.getBool(setting), 'getBool(${setting.name}');
+}
+
+extension GlobalStoreChecks on Subject<GlobalStore> {
+  Subject<GlobalSettingsStore> get settings => has((x) => x.settings, 'settings');
+  Subject<Iterable<Account>> get accounts => has((x) => x.accounts, 'accounts');
+  Subject<Iterable<int>> get accountIds => has((x) => x.accountIds, 'accountIds');
+  Subject<Iterable<({ int accountId, Account account })>> get accountEntries => has((x) => x.accountEntries, 'accountEntries');
+  Subject<Account?> getAccount(int id) => has((x) => x.getAccount(id), 'getAccount($id)');
 }
 
 extension PerAccountStoreChecks on Subject<PerAccountStore> {
@@ -50,6 +56,7 @@ extension PerAccountStoreChecks on Subject<PerAccountStore> {
   Subject<Account> get account => has((x) => x.account, 'account');
   Subject<int> get selfUserId => has((x) => x.selfUserId, 'selfUserId');
   Subject<UserSettings?> get userSettings => has((x) => x.userSettings, 'userSettings');
+  Subject<Map<int, SavedSnippet>> get savedSnippets => has((x) => x.savedSnippets, 'savedSnippets');
   Subject<Map<int, ZulipStream>> get streams => has((x) => x.streams, 'streams');
   Subject<Map<String, ZulipStream>> get streamsByName => has((x) => x.streamsByName, 'streamsByName');
   Subject<Map<int, Subscription>> get subscriptions => has((x) => x.subscriptions, 'subscriptions');
@@ -57,4 +64,10 @@ extension PerAccountStoreChecks on Subject<PerAccountStore> {
   Subject<Unreads> get unreads => has((x) => x.unreads, 'unreads');
   Subject<RecentDmConversationsView> get recentDmConversationsView => has((x) => x.recentDmConversationsView, 'recentDmConversationsView');
   Subject<AutocompleteViewManager> get autocompleteViewManager => has((x) => x.autocompleteViewManager, 'autocompleteViewManager');
+}
+
+extension ZulipVersionDataChecks on Subject<ZulipVersionData> {
+  Subject<String> get zulipVersion => has((x) => x.zulipVersion, 'zulipVersion');
+  Subject<String?> get zulipMergeBase => has((x) => x.zulipMergeBase, 'zulipMergeBase');
+  Subject<int> get zulipFeatureLevel => has((x) => x.zulipFeatureLevel, 'zulipFeatureLevel');
 }

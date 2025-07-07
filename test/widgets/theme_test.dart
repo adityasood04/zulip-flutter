@@ -1,9 +1,10 @@
+import 'dart:ui';
+
 import 'package:checks/checks.dart';
-import 'package:drift/drift.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter_checks/flutter_checks.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:zulip/model/database.dart';
 import 'package:zulip/model/settings.dart';
 import 'package:zulip/widgets/channel_colors.dart';
 import 'package:zulip/widgets/text.dart';
@@ -13,7 +14,6 @@ import '../example_data.dart' as eg;
 import '../flutter_checks.dart';
 import '../model/binding.dart';
 import '../model/store_checks.dart';
-import 'colors_checks.dart';
 import 'test_app.dart';
 
 void main() {
@@ -59,10 +59,14 @@ void main() {
     // IconButton can't have text; skip
 
     doCheck('MenuItemButton',
-      button: MenuItemButton(onPressed: () {}, child: const Text(buttonText)));
+      button: Semantics(
+        role: SemanticsRole.menu,
+        child: MenuItemButton(onPressed: () {}, child: const Text(buttonText))));
 
     doCheck('SubmenuButton',
-      button: const SubmenuButton(menuChildren: [], child: Text(buttonText)));
+      button: Semantics(
+        role: SemanticsRole.menu,
+        child: const SubmenuButton(menuChildren: [], child: Text(buttonText))));
 
     doCheck('OutlinedButton',
       button: OutlinedButton(onPressed: () {}, child: const Text(buttonText)));
@@ -111,7 +115,7 @@ void main() {
 
     await tester.pumpWidget(const TestZulipApp(child: Placeholder()));
     await tester.pump();
-    check(testBinding.globalStore).globalSettings.themeSetting.isNull();
+    check(testBinding.globalStore).settings.themeSetting.isNull();
 
     final element = tester.element(find.byType(Placeholder));
     check(zulipThemeData(element)).brightness.equals(Brightness.light);
@@ -129,17 +133,15 @@ void main() {
 
     await tester.pumpWidget(const TestZulipApp(child: Placeholder()));
     await tester.pump();
-    check(testBinding.globalStore).globalSettings.themeSetting.isNull();
+    check(testBinding.globalStore).settings.themeSetting.isNull();
 
     final element = tester.element(find.byType(Placeholder));
     check(zulipThemeData(element)).brightness.equals(Brightness.light);
 
-    await testBinding.globalStore.updateGlobalSettings(
-      const GlobalSettingsCompanion(themeSetting: Value(ThemeSetting.dark)));
+    await testBinding.globalStore.settings.setThemeSetting(ThemeSetting.dark);
     check(zulipThemeData(element)).brightness.equals(Brightness.dark);
 
-    await testBinding.globalStore.updateGlobalSettings(
-      const GlobalSettingsCompanion(themeSetting: Value(null)));
+    await testBinding.globalStore.settings.setThemeSetting(null);
     check(zulipThemeData(element)).brightness.equals(Brightness.light);
   });
 
@@ -175,6 +177,14 @@ void main() {
       await tester.pump(kThemeAnimationDuration * 0.6);
       check(colorSwatchFor(element, subscription))
         .isSameColorSwatchAs(ChannelColorSwatch.dark(baseColor));
+    });
+
+    testWidgets('fallback to default base color when no subscription', (tester) async {
+      await tester.pumpWidget(const TestZulipApp());
+      await tester.pump();
+      final element = tester.element(find.byType(Placeholder));
+      check(colorSwatchFor(element, null)).isSameColorSwatchAs(
+        ChannelColorSwatch.light(kDefaultChannelColorSwatchBaseColor));
     });
   });
 }

@@ -2,17 +2,10 @@ import '../api/model/events.dart';
 import '../api/model/initial_snapshot.dart';
 import '../api/model/model.dart';
 import 'localizations.dart';
+import 'store.dart';
 
 /// The portion of [PerAccountStore] describing the users in the realm.
-mixin UserStore {
-  /// The user ID of the "self-user",
-  /// i.e. the account the person using this app is logged into.
-  ///
-  /// This always equals the [Account.userId] on [PerAccountStore.account].
-  ///
-  /// For the corresponding [User] object, see [selfUser].
-  int get selfUserId;
-
+mixin UserStore on PerAccountStoreBase {
   /// The user with the given ID, if that user is known.
   ///
   /// There may be other users that are perfectly real but are
@@ -51,28 +44,47 @@ mixin UserStore {
 
   /// The name to show the given user as in the UI, even for unknown users.
   ///
-  /// This is the user's [User.fullName] if the user is known,
-  /// and otherwise a translation of "(unknown user)".
+  /// If the user is muted and [replaceIfMuted] is true (the default),
+  /// this is [ZulipLocalizations.mutedUser].
+  ///
+  /// Otherwise this is the user's [User.fullName] if the user is known,
+  /// or (if unknown) [ZulipLocalizations.unknownUserName].
   ///
   /// When a [Message] is available which the user sent,
   /// use [senderDisplayName] instead for a better-informed fallback.
-  String userDisplayName(int userId) {
+  String userDisplayName(int userId, {bool replaceIfMuted = true}) {
+    if (replaceIfMuted && isUserMuted(userId)) {
+      return GlobalLocalizations.zulipLocalizations.mutedUser;
+    }
     return getUser(userId)?.fullName
       ?? GlobalLocalizations.zulipLocalizations.unknownUserName;
   }
 
   /// The name to show for the given message's sender in the UI.
   ///
-  /// If the user is known (see [getUser]), this is their current [User.fullName].
+  /// If the sender is muted and [replaceIfMuted] is true (the default),
+  /// this is [ZulipLocalizations.mutedUser].
+  ///
+  /// Otherwise, if the user is known (see [getUser]),
+  /// this is their current [User.fullName].
   /// If unknown, this uses the fallback value conveniently provided on the
   /// [Message] object itself, namely [Message.senderFullName].
   ///
   /// For a user who isn't the sender of some known message,
   /// see [userDisplayName].
-  String senderDisplayName(Message message) {
-    return getUser(message.senderId)?.fullName
-      ?? message.senderFullName;
+  String senderDisplayName(Message message, {bool replaceIfMuted = true}) {
+    final senderId = message.senderId;
+    if (replaceIfMuted && isUserMuted(senderId)) {
+      return GlobalLocalizations.zulipLocalizations.mutedUser;
+    }
+    return getUser(senderId)?.fullName ?? message.senderFullName;
   }
+
+  /// Whether the user with [userId] is muted by the self-user.
+  ///
+  /// Looks for [userId] in a private [Set],
+  /// or in [event.mutedUsers] instead if event is non-null.
+  bool isUserMuted(int userId, {MutedUsersEvent? event});
 }
 
 /// The implementation of [UserStore] that does the work.
@@ -80,18 +92,16 @@ mixin UserStore {
 /// Generally the only code that should need this class is [PerAccountStore]
 /// itself.  Other code accesses this functionality through [PerAccountStore],
 /// or through the mixin [UserStore] which describes its interface.
-class UserStoreImpl with UserStore {
+class UserStoreImpl extends PerAccountStoreBase with UserStore {
   UserStoreImpl({
-    required this.selfUserId,
+    required super.core,
     required InitialSnapshot initialSnapshot,
   }) : _users = Map.fromEntries(
          initialSnapshot.realmUsers
          .followedBy(initialSnapshot.realmNonActiveUsers)
          .followedBy(initialSnapshot.crossRealmBots)
-         .map((user) => MapEntry(user.userId, user)));
-
-  @override
-  final int selfUserId;
+         .map((user) => MapEntry(user.userId, user))),
+       _mutedUsers = Set.from(initialSnapshot.mutedUsers.map((item) => item.id));
 
   final Map<int, User> _users;
 
@@ -100,6 +110,13 @@ class UserStoreImpl with UserStore {
 
   @override
   Iterable<User> get allUsers => _users.values;
+
+  final Set<int> _mutedUsers;
+
+  @override
+  bool isUserMuted(int userId, {MutedUsersEvent? event}) {
+    return (event?.mutedUsers.map((item) => item.id) ?? _mutedUsers).contains(userId);
+  }
 
   void handleRealmUserEvent(RealmUserEvent event) {
     switch (event) {
@@ -138,5 +155,10 @@ class UserStoreImpl with UserStore {
           }
         }
     }
+  }
+
+  void handleMutedUsersEvent(MutedUsersEvent event) {
+    _mutedUsers.clear();
+    _mutedUsers.addAll(event.mutedUsers.map((item) => item.id));
   }
 }
